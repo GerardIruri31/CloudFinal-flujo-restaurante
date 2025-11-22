@@ -4,6 +4,7 @@ import boto3
 from datetime import datetime, timezone
 
 dynamodb = boto3.resource("dynamodb")
+stepfunctions_client = boto3.client("stepfunctions")
 
 TABLA_PEDIDOS = os.getenv("TABLA_PEDIDOS", "PEDIDOS")
 TABLA_COCINA = os.getenv("TABLA_COCINA", "COCINA")
@@ -24,30 +25,32 @@ def obtener_timestamp_iso():
 
 def parse_event(event):
     """
-    Normaliza el event para que siempre trabajemos con un dict simple:
-    - Si viene de API Gateway HTTP API (Postman), el body viene en event["body"] (string).
-    - Si viene de Step Functions u otra Lambda, ya es un dict.
-    También mezcla pathParameters (ej: id_pedido del path).
+    Normaliza el event para:
+    - HTTP API (Postman): body JSON en event["body"]
+    - Step Functions con waitForTaskToken: { "taskToken": "...", "input": {...} }
+    - Step Functions normal: input directo
     """
+    # Caso Step Functions con waitForTaskToken
+    if "taskToken" in event and "input" in event and isinstance(event["input"], dict):
+        base = event["input"].copy()
+        base["taskToken"] = event["taskToken"]
+        return base
+
     # Caso típico HTTP API / Postman
     if "body" in event and isinstance(event["body"], str):
         try:
             body = json.loads(event["body"])
         except Exception:
-            # Si el body no es JSON válido, devolvemos dict vacío
             body = {}
 
-        # Mezclamos pathParameters si existen (por ejemplo, id_pedido del path)
         path_params = event.get("pathParameters") or {}
         if isinstance(path_params, dict):
             for k, v in path_params.items():
-                # Si no viene en el body, añadimos desde path
                 body.setdefault(k, v)
 
         return body
 
-    # Caso Step Functions u otro servicio que ya mande dict
-    # Si ahí quieren mandar tenant_id, id_pedido, etc. directamente.
+    # Caso Step Functions u otro que mande un dict simple
     return event
 
 
@@ -67,7 +70,7 @@ def validar_pedido_y_estado(event, estado_esperado: str):
     Si hay error, pedido será None y error_response será el dict de respuesta HTTP.
     """
     tenant_id = event.get("tenant_id")
-    id_pedido = event.get("id_pedido") or event.get("id")  # por si mandas "id"
+    id_pedido = event.get("id_pedido") or event.get("id")
 
     if not tenant_id or not id_pedido:
         return None, {
@@ -101,27 +104,16 @@ def validar_pedido_y_estado(event, estado_esperado: str):
     return pedido, None
 
 
-def actualizar_estado_pedido(tenant_id: str, id_pedido: str, nuevo_estado: str):
-    tabla_pedidos.update_item(
-        Key={
-            "tenant_id": tenant_id,
-            "id": id_pedido
-        },
-        UpdateExpression="SET estado_pedido = :e",
-        ExpressionAttributeValues={":e": nuevo_estado}
-    )
-
-
 # ------------------------- Lambda 1: pagado -> cocina ------------------------- #
 
 def pagado_a_cocina(event, context):
     """
     Transición:
       pagado -> cocina
-      - Crea registro en COCINA
+      - Crea registro en COCINA (status = 'cocinando')
       - Actualiza PEDIDOS.estado_pedido = 'cocina'
+      - Si viene de Step Functions, guarda task_token_cocina
     """
-    # Normalizar event (body de Postman, pathParameters, etc.)
     event = parse_event(event)
 
     pedido, error = validar_pedido_y_estado(event, "pagado")
@@ -131,7 +123,9 @@ def pagado_a_cocina(event, context):
     tenant_id = pedido["tenant_id"]
     id_pedido = pedido["id"]
     id_empleado = event.get("id_empleado")
+    task_token = event.get("taskToken")
 
+    # 1) Crear registro en COCINA
     item_cocina = {
         "id_pedido": id_pedido,
         "id_empleado": id_empleado or "no_asignado",
@@ -139,20 +133,35 @@ def pagado_a_cocina(event, context):
         "hora_fin": None,
         "status": "cocinando"
     }
-
     tabla_cocina.put_item(Item=item_cocina)
 
-    actualizar_estado_pedido(tenant_id, id_pedido, "cocina")
+    # 2) Actualizar estado del pedido a 'cocina' + token si aplica
+    update_expr = "SET estado_pedido = :e"
+    expr_values = {":e": "cocina"}
+
+    if task_token:
+        update_expr += ", task_token_cocina = :t"
+        expr_values[":t"] = task_token
+
+    tabla_pedidos.update_item(
+        Key={
+            "tenant_id": tenant_id,
+            "id": id_pedido
+        },
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_values
+    )
 
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "mensaje": "Transición pagado -> cocina realizada",
+            "mensaje": "Transición pagado -> cocina realizada (esperando confirmación de cocina si viene de Step Functions)",
             "pedido": {
                 "tenant_id": tenant_id,
                 "id_pedido": id_pedido
             },
-            "registro_cocina": item_cocina
+            "registro_cocina": item_cocina,
+            "taskToken_guardado": bool(task_token)
         })
     }
 
@@ -163,9 +172,10 @@ def cocina_a_empaquetamiento(event, context):
     """
     Transición:
       cocina -> empaquetamiento
-      - Actualiza COCINA (fin de cocción)
-      - Crea registro en DESPACHADOR (empaquetamiento)
+      - Actualiza COCINA (status = 'terminado')
+      - Crea registro en DESPACHADOR (empaquetamiento, status='cocinando')
       - Actualiza PEDIDOS.estado_pedido = 'empaquetamiento'
+      - Guarda task_token_empaquetamiento si viene de Step Functions
     """
     event = parse_event(event)
 
@@ -176,8 +186,9 @@ def cocina_a_empaquetamiento(event, context):
     tenant_id = pedido["tenant_id"]
     id_pedido = pedido["id"]
     id_empleado_despachador = event.get("id_empleado")
+    task_token = event.get("taskToken")
 
-    # 1) Terminar en COCINA
+    # 1) Terminar COCINA
     tabla_cocina.update_item(
         Key={"id_pedido": id_pedido},
         UpdateExpression="SET hora_fin = :hf, #st = :s",
@@ -194,18 +205,31 @@ def cocina_a_empaquetamiento(event, context):
         "id_empleado": id_empleado_despachador or "no_asignado",
         "hora_comienzo": obtener_timestamp_iso(),
         "hora_fin": None,
-        "status": "inicio"  # cambia el texto si quieres algo tipo "empaquetando"
+        "status": "cocinando"  # puedes cambiar el texto a 'empaquetando' si quieres
     }
-
     tabla_despachador.put_item(Item=item_despachador)
 
-    # 3) Actualizar estado del pedido
-    actualizar_estado_pedido(tenant_id, id_pedido, "empaquetamiento")
+    # 3) Actualizar estado del pedido a 'empaquetamiento' + token
+    update_expr = "SET estado_pedido = :e"
+    expr_values = {":e": "empaquetamiento"}
+
+    if task_token:
+        update_expr += ", task_token_empaquetamiento = :t"
+        expr_values[":t"] = task_token
+
+    tabla_pedidos.update_item(
+        Key={
+            "tenant_id": tenant_id,
+            "id": id_pedido
+        },
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_values
+    )
 
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "mensaje": "Transición cocina -> empaquetamiento realizada",
+            "mensaje": "Transición cocina -> empaquetamiento realizada (esperando confirmación de empaquetamiento si viene de Step Functions)",
             "pedido": {
                 "tenant_id": tenant_id,
                 "id_pedido": id_pedido
@@ -216,7 +240,8 @@ def cocina_a_empaquetamiento(event, context):
                     "status": "terminado"
                 },
                 "despachador": item_despachador
-            }
+            },
+            "taskToken_guardado": bool(task_token)
         })
     }
 
@@ -227,9 +252,10 @@ def empaquetamiento_a_delivery(event, context):
     """
     Transición:
       empaquetamiento -> delivery
-      - Actualiza DESPACHADOR (fin empaquetamiento)
-      - Crea registro en DELIVERY
+      - Actualiza DESPACHADOR (status = 'terminado')
+      - Crea registro en DELIVERY (status='en camino')
       - Actualiza PEDIDOS.estado_pedido = 'delivery'
+      - Guarda task_token_delivery si viene de Step Functions
     """
     event = parse_event(event)
 
@@ -244,8 +270,9 @@ def empaquetamiento_a_delivery(event, context):
     id_repartidor = event.get("id_repartidor")
     origen = event.get("origen")
     destino = event.get("destino")
+    task_token = event.get("taskToken")
 
-    # 1) Terminar empaquetamiento
+    # 1) Terminar empaquetamiento (DESPACHADOR)
     tabla_despachador.update_item(
         Key={"id_pedido": id_pedido},
         UpdateExpression="SET hora_fin = :hf, #st = :s",
@@ -266,16 +293,29 @@ def empaquetamiento_a_delivery(event, context):
         "destino": destino or "no_definido",
         "status": "en camino"
     }
-
     tabla_delivery.put_item(Item=item_delivery)
 
-    # 3) Actualizar estado del pedido
-    actualizar_estado_pedido(tenant_id, id_pedido, "delivery")
+    # 3) Actualizar estado del pedido a 'delivery' + token
+    update_expr = "SET estado_pedido = :e"
+    expr_values = {":e": "delivery"}
+
+    if task_token:
+        update_expr += ", task_token_delivery = :t"
+        expr_values[":t"] = task_token
+
+    tabla_pedidos.update_item(
+        Key={
+            "tenant_id": tenant_id,
+            "id": id_pedido
+        },
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_values
+    )
 
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "mensaje": "Transición empaquetamiento -> delivery realizada",
+            "mensaje": "Transición empaquetamiento -> delivery realizada (esperando confirmación de entrega si viene de Step Functions)",
             "pedido": {
                 "tenant_id": tenant_id,
                 "id_pedido": id_pedido
@@ -286,7 +326,8 @@ def empaquetamiento_a_delivery(event, context):
                     "status": "terminado"
                 },
                 "delivery": item_delivery
-            }
+            },
+            "taskToken_guardado": bool(task_token)
         })
     }
 
@@ -295,10 +336,12 @@ def empaquetamiento_a_delivery(event, context):
 
 def delivery_a_entregado(event, context):
     """
-    Transición:
+    Transición final:
       delivery -> entregado
       - Actualiza DELIVERY.status = 'cumplido'
       - Actualiza PEDIDOS.estado_pedido = 'entregado'
+      (se ejecuta automáticamente cuando Step Functions pasa a este estado,
+       después de que confirmes 'delivery-entregado' vía confirmar_paso)
     """
     event = parse_event(event)
 
@@ -318,7 +361,14 @@ def delivery_a_entregado(event, context):
     )
 
     # 2) Actualizar estado en PEDIDOS
-    actualizar_estado_pedido(tenant_id, id_pedido, "entregado")
+    tabla_pedidos.update_item(
+        Key={
+            "tenant_id": tenant_id,
+            "id": id_pedido
+        },
+        UpdateExpression="SET estado_pedido = :e",
+        ExpressionAttributeValues={":e": "entregado"}
+    )
 
     return {
         "statusCode": 200,
@@ -335,4 +385,100 @@ def delivery_a_entregado(event, context):
         })
     }
 
+
+# ------------------------- Lambda de callback: confirmar_paso ------------------------- #
+
+def confirmar_paso(event, context):
+    """
+    Lambda de callback para avanzar el Step Function.
+    Espera un body JSON con:
+      - tenant_id
+      - id_pedido
+      - paso: 'cocina-lista' | 'empaquetamiento-listo' | 'delivery-entregado'
+    """
+    event = parse_event(event)
+
+    tenant_id = event.get("tenant_id")
+    id_pedido = event.get("id_pedido") or event.get("id")
+    paso = event.get("paso")
+
+    if not tenant_id or not id_pedido or not paso:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "mensaje": "Faltan tenant_id, id_pedido o paso"
+            })
+        }
+
+    resp = tabla_pedidos.get_item(
+        Key={
+            "tenant_id": tenant_id,
+            "id": id_pedido
+        }
+    )
+    pedido = resp.get("Item")
+    if not pedido:
+        return {
+            "statusCode": 404,
+            "body": json.dumps({
+                "mensaje": "Pedido no encontrado",
+                "tenant_id": tenant_id,
+                "id_pedido": id_pedido
+            })
+        }
+
+    # Mapeo paso -> nombre del campo del token
+    mapa_paso_token = {
+        "cocina-lista": "task_token_cocina",
+        "empaquetamiento-listo": "task_token_empaquetamiento",
+        "delivery-entregado": "task_token_delivery"
+    }
+
+    nombre_campo = mapa_paso_token.get(paso)
+    if not nombre_campo:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "mensaje": f"Paso '{paso}' no soportado. "
+                           f"Usa uno de: {list(mapa_paso_token.keys())}"
+            })
+        }
+
+    task_token = pedido.get(nombre_campo)
+    if not task_token:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "mensaje": f"No se encontró {nombre_campo} para este pedido. "
+                           f"¿Se inició el flujo correctamente?"
+            })
+        }
+
+    # Enviamos el callback a Step Functions
+    stepfunctions_client.send_task_success(
+        TaskToken=task_token,
+        output=json.dumps({
+            "mensaje": f"Confirmación de paso '{paso}'",
+            "tenant_id": tenant_id,
+            "id_pedido": id_pedido
+        })
+    )
+
+    # Limpiamos el token del pedido
+    tabla_pedidos.update_item(
+        Key={
+            "tenant_id": tenant_id,
+            "id": id_pedido
+        },
+        UpdateExpression=f"REMOVE {nombre_campo}"
+    )
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "mensaje": f"Confirmación '{paso}' enviada a Step Functions",
+            "tenant_id": tenant_id,
+            "id_pedido": id_pedido
+        })
+    }
 
