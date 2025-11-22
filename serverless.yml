@@ -1,0 +1,162 @@
+org: gerardiruri31utec
+service: pedidos-universidad
+
+provider:
+  name: aws
+  runtime: python3.13
+  timeout: 30
+  stage: dev
+  httpApi:
+    cors: true
+  iam:
+    role: arn:aws:iam::058264221898:role/LabRole
+
+  environment:
+    TABLA_PEDIDOS: ${self:service}-pedidos-${sls:stage}
+    TABLA_COCINA: ${self:service}-cocina-${sls:stage}
+    TABLA_DESPACHADOR: ${self:service}-despachador-${sls:stage}
+    TABLA_DELIVERY: ${self:service}-delivery-${sls:stage}
+
+plugins:
+  - serverless-step-functions
+
+functions:
+  pagadoACocina:
+    handler: estado_pedidos.pagado_a_cocina
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/pagado-a-cocina
+          method: post
+
+  cocinaAEmpaquetamiento:
+    handler: estado_pedidos.cocina_a_empaquetamiento
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/cocina-a-empaquetamiento
+          method: post
+
+  empaquetamientoADelivery:
+    handler: estado_pedidos.empaquetamiento_a_delivery
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/empaquetamiento-a-delivery
+          method: post
+
+  deliveryAEntregado:
+    handler: estado_pedidos.delivery_a_entregado
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/delivery-a-entregado
+          method:
+
+  confirmarPaso:
+    handler: estado_pedidos.confirmar_paso
+    events:
+      - httpApi:
+          path: /workflow/confirmar
+          method: post
+
+resources:
+  Resources:
+    PedidosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-pedidos-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH # PK
+          - AttributeName: id
+            KeyType: RANGE # SK
+
+    CocinaTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-cocina-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id_pedido
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id_pedido
+            KeyType: HASH # PK
+
+    DespachadorTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-despachador-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id_pedido
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id_pedido
+            KeyType: HASH # PK
+
+    DeliveryTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-delivery-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id_pedido
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id_pedido
+            KeyType: HASH # PK
+
+stepFunctions:
+  stateMachines:
+    flujoPedido:
+      name: flujo-pedido-${self:provider.stage}
+      definition:
+        Comment: "Flujo completo de un pedido: pagado -> cocina -> empaquetamiento -> delivery -> entregado"
+        StartAt: PagadoACocina
+        States:
+          PagadoACocina:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName:
+                Fn::GetAtt: [pagadoACocina, Arn]
+              Payload:
+                taskToken.$: "$$.Task.Token"
+                input.$: "$"
+            ResultPath: null
+            Next: CocinaAEmpaquetamiento
+
+          CocinaAEmpaquetamiento:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName:
+                Fn::GetAtt: [cocinaAEmpaquetamiento, Arn]
+              Payload:
+                taskToken.$: "$$.Task.Token"
+                input.$: "$"
+            ResultPath: null
+            Next: EmpaquetamientoADelivery
+
+          EmpaquetamientoADelivery:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName:
+                Fn::GetAtt: [empaquetamientoADelivery, Arn]
+              Payload:
+                taskToken.$: "$$.Task.Token"
+                input.$: "$"
+            ResultPath: null
+            Next: DeliveryAEntregado
+
+          DeliveryAEntregado:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [deliveryAEntregado, Arn]
+            ResultPath: null
+            End: true
