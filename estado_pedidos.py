@@ -386,8 +386,6 @@ def delivery_a_entregado(event, context):
     }
 
 
-# ------------------------- Lambda de callback: confirmar_paso ------------------------- #
-
 def confirmar_paso(event, context):
     """
     Lambda de callback para avanzar el Step Function.
@@ -396,7 +394,11 @@ def confirmar_paso(event, context):
       - id_pedido
       - paso: 'cocina-lista' | 'empaquetamiento-listo' | 'delivery-entregado'
     """
+    # Para ver exactamente qué llega desde API Gateway
+    print("DEBUG raw event:", json.dumps(event))
+
     event = parse_event(event)
+    print("DEBUG parsed event:", json.dumps(event))
 
     tenant_id = event.get("tenant_id")
     id_pedido = event.get("id_pedido") or event.get("id")
@@ -406,16 +408,29 @@ def confirmar_paso(event, context):
         return {
             "statusCode": 400,
             "body": json.dumps({
-                "mensaje": "Faltan tenant_id, id_pedido o paso"
+                "mensaje": "Faltan tenant_id, id_pedido o paso",
+                "event": event
             })
         }
 
-    resp = tabla_pedidos.get_item(
-        Key={
-            "tenant_id": tenant_id,
-            "id": id_pedido
+    # 1) Leer pedido de Dynamo
+    try:
+        resp = tabla_pedidos.get_item(
+            Key={
+                "tenant_id": tenant_id,
+                "id": id_pedido
+            }
+        )
+    except Exception as e:
+        print("ERROR get_item:", repr(e))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "mensaje": "Error al leer pedido en DynamoDB",
+                "detalle": str(e)
+            })
         }
-    )
+
     pedido = resp.get("Item")
     if not pedido:
         return {
@@ -439,8 +454,7 @@ def confirmar_paso(event, context):
         return {
             "statusCode": 400,
             "body": json.dumps({
-                "mensaje": f"Paso '{paso}' no soportado. "
-                           f"Usa uno de: {list(mapa_paso_token.keys())}"
+                "mensaje": f"Paso '{paso}' no soportado. Usa uno de: {list(mapa_paso_token.keys())}"
             })
         }
 
@@ -450,28 +464,54 @@ def confirmar_paso(event, context):
             "statusCode": 400,
             "body": json.dumps({
                 "mensaje": f"No se encontró {nombre_campo} para este pedido. "
-                           f"¿Se inició el flujo correctamente?"
+                           f"¿Seguro que la ejecución del Step Function está esperando en este paso?"
             })
         }
 
-    # Enviamos el callback a Step Functions
-    stepfunctions_client.send_task_success(
-        TaskToken=task_token,
-        output=json.dumps({
-            "mensaje": f"Confirmación de paso '{paso}'",
-            "tenant_id": tenant_id,
-            "id_pedido": id_pedido
-        })
-    )
+    # 2) Enviar callback a Step Functions
+    try:
+        resp_sf = stepfunctions_client.send_task_success(
+            TaskToken=task_token,
+            output=json.dumps({
+                "mensaje": f"Confirmación de paso '{paso}'",
+                "tenant_id": tenant_id,
+                "id_pedido": id_pedido
+            })
+        )
+        print("DEBUG send_task_success resp:", resp_sf)
+    except Exception as e:
+        # Aquí verás si es falta de permisos, token inválido, etc.
+        print("ERROR send_task_success:", repr(e))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "mensaje": "Error al enviar confirmación a Step Functions",
+                "detalle": str(e)
+            })
+        }
 
-    # Limpiamos el token del pedido
-    tabla_pedidos.update_item(
-        Key={
-            "tenant_id": tenant_id,
-            "id": id_pedido
-        },
-        UpdateExpression=f"REMOVE {nombre_campo}"
-    )
+    # 3) Limpiar el token del pedido
+    try:
+        tabla_pedidos.update_item(
+            Key={
+                "tenant_id": tenant_id,
+                "id": id_pedido
+            },
+            UpdateExpression=f"REMOVE {nombre_campo}"
+        )
+    except Exception as e:
+        print("ERROR update_item REMOVE token:", repr(e))
+        # No es crítico, pero lo devolvemos para que lo veas
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "mensaje": f"Confirmación '{paso}' enviada a Step Functions, "
+                           f"pero hubo un error al limpiar el token en DynamoDB",
+                "detalle": str(e),
+                "tenant_id": tenant_id,
+                "id_pedido": id_pedido
+            })
+        }
 
     return {
         "statusCode": 200,
@@ -481,3 +521,6 @@ def confirmar_paso(event, context):
             "id_pedido": id_pedido
         })
     }
+
+
+
