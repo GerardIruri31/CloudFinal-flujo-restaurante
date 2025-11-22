@@ -47,7 +47,7 @@ functions:
     events:
       - httpApi:
           path: /pedidos/{id_pedido}/delivery-a-entregado
-          method:
+          method: post
 
   confirmarPaso:
     handler: estado_pedidos.confirmar_paso
