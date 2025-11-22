@@ -17,6 +17,9 @@ provider:
     TABLA_DESPACHADOR: ${self:service}-despachador-${sls:stage}
     TABLA_DELIVERY: ${self:service}-delivery-${sls:stage}
 
+plugins:
+  - serverless-step-functions
+
 functions:
   pagadoACocina:
     handler: estado_pedidos.pagado_a_cocina
@@ -44,6 +47,13 @@ functions:
     events:
       - httpApi:
           path: /pedidos/{id_pedido}/delivery-a-entregado
+          method:
+
+  confirmarPaso:
+    handler: estado_pedidos.confirmar_paso
+    events:
+      - httpApi:
+          path: /workflow/confirmar
           method: post
 
 resources:
@@ -99,3 +109,55 @@ resources:
         KeySchema:
           - AttributeName: id_pedido
             KeyType: HASH # PK
+
+stepFunctions:
+  stateMachines:
+    flujoPedido:
+      name: flujo-pedido-${self:provider.stage}
+      definition:
+        Comment: "Flujo completo de un pedido: pagado -> cocina -> empaquetamiento -> delivery -> entregado"
+        StartAt: PagadoACocina
+        States:
+          PagadoACocina:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName:
+                Fn::GetAtt: [pagadoACocina, Arn]
+              Payload:
+                taskToken.$: "$$.Task.Token"
+                input.$: "$"
+            ResultPath: null
+            Next: CocinaAEmpaquetamiento
+
+          CocinaAEmpaquetamiento:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName:
+                Fn::GetAtt: [cocinaAEmpaquetamiento, Arn]
+              Payload:
+                taskToken.$: "$$.Task.Token"
+                input.$: "$"
+            ResultPath: null
+            Next: EmpaquetamientoADelivery
+
+          EmpaquetamientoADelivery:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName:
+                Fn::GetAtt: [empaquetamientoADelivery, Arn]
+              Payload:
+                taskToken.$: "$$.Task.Token"
+                input.$: "$"
+            ResultPath: null
+            Next: DeliveryAEntregado
+
+          DeliveryAEntregado:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [deliveryAEntregado, Arn]
+            ResultPath: null
+            End: true
+
