@@ -194,7 +194,7 @@ def cocina_a_empaquetamiento(event, context):
         "id_empleado": id_empleado_despachador or "no_asignado",
         "hora_comienzo": obtener_timestamp_iso(),
         "hora_fin": None,
-        "status": "cocinando"  # cambia el texto si quieres algo tipo "empaquetando"
+        "status": "inicio"  # cambia el texto si quieres algo tipo "empaquetando"
     }
 
     tabla_despachador.put_item(Item=item_despachador)
@@ -334,4 +334,5 @@ def delivery_a_entregado(event, context):
             }
         })
     }
+
 
