@@ -471,7 +471,7 @@ def confirmar_paso(event, context):
     # 2) Enviar callback a Step Functions
     try:
         resp_sf = stepfunctions_client.send_task_success(
-            TaskToken=task_token,
+            taskToken=task_token,
             output=json.dumps({
                 "mensaje": f"Confirmación de paso '{paso}'",
                 "tenant_id": tenant_id,
