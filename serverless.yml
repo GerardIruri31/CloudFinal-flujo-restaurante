@@ -18,7 +18,7 @@ provider:
     TABLA_DELIVERY: ${self:service}-delivery-${sls:stage}
 
 plugins:
-  - serverless-step-functions
+  # - serverless-step-functions
 
 functions:
   pagadoACocina:
@@ -110,53 +110,54 @@ resources:
           - AttributeName: id_pedido
             KeyType: HASH # PK
 
-stepFunctions:
-  stateMachines:
-    flujoPedido:
-      name: flujo-pedido-${self:provider.stage}
-      definition:
-        Comment: "Flujo completo de un pedido: pagado -> cocina -> empaquetamiento -> delivery -> entregado"
-        StartAt: PagadoACocina
-        States:
-          PagadoACocina:
-            Type: Task
-            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
-            Parameters:
-              FunctionName:
-                Fn::GetAtt: [pagadoACocina, Arn]
-              Payload:
-                taskToken.$: "$$.Task.Token"
-                input.$: "$"
-            ResultPath: null
-            Next: CocinaAEmpaquetamiento
+#stepFunctions:
+# stateMachines:
+#  flujoPedido:
+#   name: flujo-pedido-${self:provider.stage}
+#  definition:
+#   Comment: "Flujo completo de un pedido: pagado -> cocina -> empaquetamiento -> delivery -> entregado"
+#  StartAt: PagadoACocina
+# States:
+#  PagadoACocina:
+#   Type: Task
+#  Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+# Parameters:
+#  FunctionName:
+#   Fn::GetAtt: [pagadoACocina, Arn]
+#Payload:
+# taskToken.$: "$$.Task.Token"
+#input.$: "$"
+#ResultPath: null
+#Next: CocinaAEmpaquetamiento
 
-          CocinaAEmpaquetamiento:
-            Type: Task
-            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
-            Parameters:
-              FunctionName:
-                Fn::GetAtt: [cocinaAEmpaquetamiento, Arn]
-              Payload:
-                taskToken.$: "$$.Task.Token"
-                input.$: "$"
-            ResultPath: null
-            Next: EmpaquetamientoADelivery
+#  CocinaAEmpaquetamiento:
+#   Type: Task
+#  Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+# Parameters:
+#  FunctionName:
+#   Fn::GetAtt: [cocinaAEmpaquetamiento, Arn]
+#Payload:
+# taskToken.$: "$$.Task.Token"
+#input.$: "$"
+#  ResultPath: null
+#  Next: EmpaquetamientoADelivery
 
-          EmpaquetamientoADelivery:
-            Type: Task
-            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
-            Parameters:
-              FunctionName:
-                Fn::GetAtt: [empaquetamientoADelivery, Arn]
-              Payload:
-                taskToken.$: "$$.Task.Token"
-                input.$: "$"
-            ResultPath: null
-            Next: DeliveryAEntregado
+# EmpaquetamientoADelivery:
+#  Type: Task
+# Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+#Parameters:
+# FunctionName:
+#  Fn::GetAtt: [empaquetamientoADelivery, Arn]
+# Payload:
+#  taskToken.$: "$$.Task.Token"
+# input.$: "$"
+#           ResultPath: null
+#          Next: DeliveryAEntregado
 
-          DeliveryAEntregado:
-            Type: Task
-            Resource:
-              Fn::GetAtt: [deliveryAEntregado, Arn]
-            ResultPath: null
-            End: true
+#          DeliveryAEntregado:
+#           Type: Task
+#          Resource:
+#          Fn::GetAtt: [deliveryAEntregado, Arn]
+#       ResultPath: null
+#      End: true
+
