@@ -1,0 +1,101 @@
+org: gerardiruri31utec
+service: pedidos-universidad
+
+provider:
+  name: aws
+  runtime: python3.13
+  timeout: 30
+  stage: dev
+  httpApi:
+    cors: true
+  iam:
+    role: arn:aws:iam::058264221898:role/LabRole
+
+  environment:
+    TABLA_PEDIDOS: ${self:service}-pedidos-${sls:stage}
+    TABLA_COCINA: ${self:service}-cocina-${sls:stage}
+    TABLA_DESPACHADOR: ${self:service}-despachador-${sls:stage}
+    TABLA_DELIVERY: ${self:service}-delivery-${sls:stage}
+
+functions:
+  pagadoACocina:
+    handler: estado_pedidos.pagado_a_cocina
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/pagado-a-cocina
+          method: post
+
+  cocinaAEmpaquetamiento:
+    handler: estado_pedidos.cocina_a_empaquetamiento
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/cocina-a-empaquetamiento
+          method: post
+
+  empaquetamientoADelivery:
+    handler: estado_pedidos.empaquetamiento_a_delivery
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/empaquetamiento-a-delivery
+          method: post
+
+  deliveryAEntregado:
+    handler: estado_pedidos.delivery_a_entregado
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}/delivery-a-entregado
+          method: post
+
+resources:
+  Resources:
+    PedidosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-pedidos-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH # PK
+          - AttributeName: id
+            KeyType: RANGE # SK
+
+    CocinaTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-cocina-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id_pedido
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id_pedido
+            KeyType: HASH # PK
+
+    DespachadorTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-despachador-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id_pedido
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id_pedido
+            KeyType: HASH # PK
+
+    DeliveryTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-delivery-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id_pedido
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id_pedido
+            KeyType: HASH # PK
