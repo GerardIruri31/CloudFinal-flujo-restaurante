@@ -22,6 +22,35 @@ def obtener_timestamp_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_event(event):
+    """
+    Normaliza el event para que siempre trabajemos con un dict simple:
+    - Si viene de API Gateway HTTP API (Postman), el body viene en event["body"] (string).
+    - Si viene de Step Functions u otra Lambda, ya es un dict.
+    También mezcla pathParameters (ej: id_pedido del path).
+    """
+    # Caso típico HTTP API / Postman
+    if "body" in event and isinstance(event["body"], str):
+        try:
+            body = json.loads(event["body"])
+        except Exception:
+            # Si el body no es JSON válido, devolvemos dict vacío
+            body = {}
+
+        # Mezclamos pathParameters si existen (por ejemplo, id_pedido del path)
+        path_params = event.get("pathParameters") or {}
+        if isinstance(path_params, dict):
+            for k, v in path_params.items():
+                # Si no viene en el body, añadimos desde path
+                body.setdefault(k, v)
+
+        return body
+
+    # Caso Step Functions u otro servicio que ya mande dict
+    # Si ahí quieren mandar tenant_id, id_pedido, etc. directamente.
+    return event
+
+
 def obtener_pedido(tenant_id: str, id_pedido: str):
     resp = tabla_pedidos.get_item(
         Key={
@@ -38,7 +67,7 @@ def validar_pedido_y_estado(event, estado_esperado: str):
     Si hay error, pedido será None y error_response será el dict de respuesta HTTP.
     """
     tenant_id = event.get("tenant_id")
-    id_pedido = event.get("id_pedido")
+    id_pedido = event.get("id_pedido") or event.get("id")  # por si mandas "id"
 
     if not tenant_id or not id_pedido:
         return None, {
@@ -92,6 +121,9 @@ def pagado_a_cocina(event, context):
       - Crea registro en COCINA
       - Actualiza PEDIDOS.estado_pedido = 'cocina'
     """
+    # Normalizar event (body de Postman, pathParameters, etc.)
+    event = parse_event(event)
+
     pedido, error = validar_pedido_y_estado(event, "pagado")
     if error:
         return error
@@ -135,6 +167,8 @@ def cocina_a_empaquetamiento(event, context):
       - Crea registro en DESPACHADOR (empaquetamiento)
       - Actualiza PEDIDOS.estado_pedido = 'empaquetamiento'
     """
+    event = parse_event(event)
+
     pedido, error = validar_pedido_y_estado(event, "cocina")
     if error:
         return error
@@ -160,7 +194,7 @@ def cocina_a_empaquetamiento(event, context):
         "id_empleado": id_empleado_despachador or "no_asignado",
         "hora_comienzo": obtener_timestamp_iso(),
         "hora_fin": None,
-        "status": "cocinando"  # puedes cambiar el string si quieres algo más propio de empaquetado
+        "status": "cocinando"  # cambia el texto si quieres algo tipo "empaquetando"
     }
 
     tabla_despachador.put_item(Item=item_despachador)
@@ -197,6 +231,8 @@ def empaquetamiento_a_delivery(event, context):
       - Crea registro en DELIVERY
       - Actualiza PEDIDOS.estado_pedido = 'delivery'
     """
+    event = parse_event(event)
+
     pedido, error = validar_pedido_y_estado(event, "empaquetamiento")
     if error:
         return error
@@ -264,6 +300,8 @@ def delivery_a_entregado(event, context):
       - Actualiza DELIVERY.status = 'cumplido'
       - Actualiza PEDIDOS.estado_pedido = 'entregado'
     """
+    event = parse_event(event)
+
     pedido, error = validar_pedido_y_estado(event, "delivery")
     if error:
         return error
@@ -296,3 +334,4 @@ def delivery_a_entregado(event, context):
             }
         })
     }
+
