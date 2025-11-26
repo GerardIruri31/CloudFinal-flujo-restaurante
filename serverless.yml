@@ -18,29 +18,45 @@ provider:
     TABLA_DELIVERY: ${self:service}-delivery-${sls:stage}
 
 plugins:
+  # plugin de step functions lo puedes re-activar cuando definas la máquina de estados
   # - serverless-step-functions
 
 functions:
   pagadoACocina:
     handler: estado_pedidos.pagado_a_cocina
+    reservedConcurrency: 3 # <= máximo 3 pedidos en este paso
     events:
       - httpApi:
           path: /pedidos/{id_pedido}/pagado-a-cocina
           method: post
+      - sqs: # <= NUEVO: trigger SQS
+          arn:
+            Fn::GetAtt: [YAPAGADOSQueue, Arn]
+          batchSize: 1
 
   cocinaAEmpaquetamiento:
     handler: estado_pedidos.cocina_a_empaquetamiento
+    reservedConcurrency: 3
     events:
       - httpApi:
           path: /pedidos/{id_pedido}/cocina-a-empaquetamiento
           method: post
+      - sqs:
+          arn:
+            Fn::GetAtt: [PEDIDOSYACOCINADOSQueue, Arn]
+          batchSize: 1
 
   empaquetamientoADelivery:
     handler: estado_pedidos.empaquetamiento_a_delivery
+    reservedConcurrency: 3
     events:
       - httpApi:
           path: /pedidos/{id_pedido}/empaquetamiento-a-delivery
           method: post
+      - sqs:
+          arn:
+            Fn::GetAtt: [PEDIDOSLISTOSPARARECOGERQueue, Arn]
+          batchSize: 1
 
   deliveryAEntregado:
     handler: estado_pedidos.delivery_a_entregado
@@ -110,54 +126,31 @@ resources:
           - AttributeName: id_pedido
             KeyType: HASH # PK
 
-#stepFunctions:
-# stateMachines:
-#  flujoPedido:
-#   name: flujo-pedido-${self:provider.stage}
-#  definition:
-#   Comment: "Flujo completo de un pedido: pagado -> cocina -> empaquetamiento -> delivery -> entregado"
-#  StartAt: PagadoACocina
-# States:
-#  PagadoACocina:
-#   Type: Task
-#  Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
-# Parameters:
-#  FunctionName:
-#   Fn::GetAtt: [pagadoACocina, Arn]
-#Payload:
-# taskToken.$: "$$.Task.Token"
-#input.$: "$"
-#ResultPath: null
-#Next: CocinaAEmpaquetamiento
+    # =============================
+    # COLAS SQS POR PASO
+    # =============================
 
-#  CocinaAEmpaquetamiento:
-#   Type: Task
-#  Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
-# Parameters:
-#  FunctionName:
-#   Fn::GetAtt: [cocinaAEmpaquetamiento, Arn]
-#Payload:
-# taskToken.$: "$$.Task.Token"
-#input.$: "$"
-#  ResultPath: null
-#  Next: EmpaquetamientoADelivery
+    YAPAGADOSQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: YAPAGADOS.fifo
+        FifoQueue: true
+        ContentBasedDeduplication: true
+        VisibilityTimeout: 60
 
-# EmpaquetamientoADelivery:
-#  Type: Task
-# Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
-#Parameters:
-# FunctionName:
-#  Fn::GetAtt: [empaquetamientoADelivery, Arn]
-# Payload:
-#  taskToken.$: "$$.Task.Token"
-# input.$: "$"
-#           ResultPath: null
-#          Next: DeliveryAEntregado
+    PEDIDOSYACOCINADOSQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: PEDIDOSYACOCINADOS.fifo
+        FifoQueue: true
+        ContentBasedDeduplication: true
+        VisibilityTimeout: 60
 
-#          DeliveryAEntregado:
-#           Type: Task
-#          Resource:
-#          Fn::GetAtt: [deliveryAEntregado, Arn]
-#       ResultPath: null
-#      End: true
+    PEDIDOSLISTOSPARARECOGERQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: PEDIDOSLISTOSPARARECOGER.fifo
+        FifoQueue: true
+        ContentBasedDeduplication: true
+        VisibilityTimeout: 60
 
