@@ -26,12 +26,12 @@ def obtener_timestamp_iso():
 def parse_event(event):
     """
     Normaliza el event para:
-    - HTTP API (Postman): body JSON en event["body"]
-    - Step Functions con waitForTaskToken: { "taskToken": "...", "input": {...} }
-    - Step Functions normal: input directo
     - SQS: event["Records"][0]["body"] con JSON
+    - Step Functions con waitForTaskToken: { "taskToken": "...", "input": {...} }
+    - HTTP API (Postman): body JSON en event["body"]
+    - Step Functions normal: input directo
     """
-    # --- Nuevo: evento desde SQS ---
+    # --- Evento desde SQS ---
     if "Records" in event and isinstance(event["Records"], list) and event["Records"]:
         record = event["Records"][0]
         if record.get("eventSource") == "aws:sqs":
@@ -42,7 +42,6 @@ def parse_event(event):
                 body = {"raw_body": body_str}
             return body
 
-    
     # Caso Step Functions con waitForTaskToken
     if "taskToken" in event and "input" in event and isinstance(event["input"], dict):
         base = event["input"].copy()
