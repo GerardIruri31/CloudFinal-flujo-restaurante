@@ -29,7 +29,20 @@ def parse_event(event):
     - HTTP API (Postman): body JSON en event["body"]
     - Step Functions con waitForTaskToken: { "taskToken": "...", "input": {...} }
     - Step Functions normal: input directo
+    - SQS: event["Records"][0]["body"] con JSON
     """
+    # --- Nuevo: evento desde SQS ---
+    if "Records" in event and isinstance(event["Records"], list) and event["Records"]:
+        record = event["Records"][0]
+        if record.get("eventSource") == "aws:sqs":
+            body_str = record.get("body", "{}")
+            try:
+                body = json.loads(body_str)
+            except Exception:
+                body = {"raw_body": body_str}
+            return body
+
+    
     # Caso Step Functions con waitForTaskToken
     if "taskToken" in event and "input" in event and isinstance(event["input"], dict):
         base = event["input"].copy()
