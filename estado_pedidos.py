@@ -2,6 +2,8 @@ import os
 import json
 import boto3
 from datetime import datetime, timezone
+from decimal import Decimal
+from boto3.dynamodb.conditions import Key, Attr
 
 dynamodb = boto3.resource("dynamodb")
 stepfunctions_client = boto3.client("stepfunctions")
@@ -18,6 +20,15 @@ tabla_delivery = dynamodb.Table(TABLA_DELIVERY)
 
 
 # ------------------------- Utilitarios ------------------------- #
+
+def decimal_default(obj):
+    if isinstance(obj, Decimal):
+        # Si el número es entero, devuélvelo como int
+        if obj % 1 == 0:
+            return int(obj)
+        # Si tiene decimales, devuélvelo como float
+        return float(obj)
+    raise TypeError
 
 def obtener_timestamp_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -464,19 +475,18 @@ def obtener_pedido(event, context):
     delivery_resp = tabla_delivery.get_item(Key={"id_pedido": id_pedido})
     delivery = delivery_resp.get("Item", {})
 
-    # Respuesta
     return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "pedido": pedido,
-            "cocina": cocina,
-            "empaquetamiento": despachador,
-            "delivery": delivery
-        })
+    "statusCode": 200,
+    "body": json.dumps({
+        "pedido": pedido,
+        "cocina": cocina,
+        "empaquetamiento": despachador,
+        "delivery": delivery
+    }, default=decimal_default)
     }
 
 
-from boto3.dynamodb.conditions import Key, Attr
+
 
 def listar_pedidos(event, context):
     """
@@ -534,7 +544,7 @@ def listar_pedidos(event, context):
             "filtro_estados": lista_estados,
             "cantidad": len(pedidos_finales),
             "pedidos": pedidos_finales
-        })
+        }, default=decimal_default)
     }
 
 
