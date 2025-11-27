@@ -397,6 +397,132 @@ def delivery_a_entregado(event, context):
     }
 
 
+def obtener_pedido(event, context):
+    """
+    GET /pedidos/{id_pedido}?tenant_id=TENANT
+    Devuelve datos completos del pedido + cocina + empaquetamiento + delivery.
+    """
+
+    print("DEBUG obtener_pedido raw event:", json.dumps(event))
+
+    event = parse_event(event)
+
+    id_pedido = event.get("id_pedido") or event.get("path_id_pedido")
+    tenant_id = event.get("tenant_id")
+
+    if not id_pedido or not tenant_id:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "mensaje": "Falta tenant_id o id_pedido"
+            })
+        }
+
+    # 1. Obtener PEDIDO
+    try:
+        pedido_resp = tabla_pedidos.get_item(
+            Key={"tenant_id": tenant_id, "id": id_pedido}
+        )
+        pedido = pedido_resp.get("Item")
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"mensaje": "Error leyendo pedido", "detalle": str(e)})
+        }
+
+    if not pedido:
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"mensaje": "Pedido no encontrado"})
+        }
+
+    # 2. Obtener COCINA
+    cocina_resp = tabla_cocina.get_item(Key={"id_pedido": id_pedido})
+    cocina = cocina_resp.get("Item", {})
+
+    # 3. Obtener EMPAQUETAMIENTO
+    des_resp = tabla_despachador.get_item(Key={"id_pedido": id_pedido})
+    despachador = des_resp.get("Item", {})
+
+    # 4. Obtener DELIVERY
+    delivery_resp = tabla_delivery.get_item(Key={"id_pedido": id_pedido})
+    delivery = delivery_resp.get("Item", {})
+
+    # Respuesta
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "pedido": pedido,
+            "cocina": cocina,
+            "empaquetamiento": despachador,
+            "delivery": delivery
+        })
+    }
+
+
+from boto3.dynamodb.conditions import Key, Attr
+
+def listar_pedidos(event, context):
+    """
+    GET /pedidos?tenant_id=X&estado=cocina,delivery
+    Devuelve todos los pedidos de un tenant, filtrando por uno o varios estados.
+    """
+
+    print("DEBUG listar_pedidos raw event:", json.dumps(event))
+
+    event = parse_event(event)
+
+    tenant_id = event.get("tenant_id")
+    estados_raw = event.get("estado")  # puede ser "cocina", "cocina,delivery", etc.
+
+    if not tenant_id or not estados_raw:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "mensaje": "Debe enviar tenant_id y estado (uno o varios separados por coma)."
+            })
+        }
+
+    # Procesar lista de estados
+    lista_estados = [e.strip() for e in estados_raw.split(",") if e.strip()]
+
+    print("DEBUG lista_estados:", lista_estados)
+
+    pedidos_finales = []
+
+    try:
+        # Query por tenant_id
+        resp = tabla_pedidos.query(
+            KeyConditionExpression=Key("tenant_id").eq(tenant_id)
+        )
+        items = resp.get("Items", [])
+
+        # Filtrar manualmente por los estados solicitados
+        for item in items:
+            if item.get("estado_pedido") in lista_estados:
+                pedidos_finales.append(item)
+
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "mensaje": "Error consultando pedidos",
+                "detalle": str(e)
+            })
+        }
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "tenant_id": tenant_id,
+            "filtro_estados": lista_estados,
+            "cantidad": len(pedidos_finales),
+            "pedidos": pedidos_finales
+        })
+    }
+
+
+
 # ------------------------- Lambda de callback: confirmar_paso ------------------------- #
 def confirmar_paso(event, context):
     """
@@ -579,6 +705,8 @@ def confirmar_paso(event, context):
                 "id_pedido": id_pedido
         })
     }
+
+
 
 
 
