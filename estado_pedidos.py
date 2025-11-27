@@ -22,7 +22,6 @@ tabla_delivery = dynamodb.Table(TABLA_DELIVERY)
 def obtener_timestamp_iso():
     return datetime.now(timezone.utc).isoformat()
 
-
 def parse_event(event):
     """
     Normaliza el event para:
@@ -398,6 +397,7 @@ def delivery_a_entregado(event, context):
     }
 
 
+# ------------------------- Lambda de callback: confirmar_paso ------------------------- #
 def confirmar_paso(event, context):
     """
     Lambda de callback para avanzar el Step Function.
@@ -405,6 +405,7 @@ def confirmar_paso(event, context):
       - tenant_id
       - id_pedido
       - paso: 'cocina-lista' | 'empaquetamiento-listo' | 'delivery-entregado'
+      - OPCIONAL: id_empleado, repartidor, id_repartidor, origen, destino
     """
     # Para ver exactamente qué llega desde API Gateway
     print("DEBUG raw event:", json.dumps(event))
@@ -415,6 +416,12 @@ def confirmar_paso(event, context):
     tenant_id = event.get("tenant_id")
     id_pedido = event.get("id_pedido") or event.get("id")
     paso = event.get("paso")
+
+    id_empleado = event.get("id_empleado")
+    repartidor = event.get("repartidor")
+    id_repartidor = event.get("id_repartidor")
+    origen = event.get("origen")
+    destino = event.get("destino")
 
     if not tenant_id or not id_pedido or not paso:
         return {
@@ -480,24 +487,64 @@ def confirmar_paso(event, context):
             })
         }
 
-    # 2) Enviar callback a Step Functions
+    # 2) Actualizar info opcional (empleado / repartidor) y enviar callback
     try:
+        # 2.a) Actualizar COCINA / DESPACHADOR / DELIVERY según el paso
+        if paso == "cocina-lista" and id_empleado:
+            tabla_cocina.update_item(
+                Key={"id_pedido": id_pedido},
+                UpdateExpression="SET id_empleado = :e",
+                ExpressionAttributeValues={":e": id_empleado}
+            )
+
+        elif paso == "empaquetamiento-listo" and id_empleado:
+            tabla_despachador.update_item(
+                Key={"id_pedido": id_pedido},
+                UpdateExpression="SET id_empleado = :e",
+                ExpressionAttributeValues={":e": id_empleado}
+            )
+
+        elif paso == "delivery-entregado":
+            update_expr = []
+            expr_vals = {}
+
+            if repartidor:
+                update_expr.append("repartidor = :r")
+                expr_vals[":r"] = repartidor
+            if id_repartidor:
+                update_expr.append("id_repartidor = :ir")
+                expr_vals[":ir"] = id_repartidor
+            if origen:
+                update_expr.append("origen = :o")
+                expr_vals[":o"] = origen
+            if destino:
+                update_expr.append("destino = :d")
+                expr_vals[":d"] = destino
+
+            if update_expr:
+                tabla_delivery.update_item(
+                    Key={"id_pedido": id_pedido},
+                    UpdateExpression="SET " + ", ".join(update_expr),
+                    ExpressionAttributeValues=expr_vals
+                )
+
+        # 2.b) Enviar callback a Step Functions
         resp_sf = stepfunctions_client.send_task_success(
             taskToken=task_token,
             output=json.dumps({
-                "mensaje": f"Confirmación de paso '{paso}'",
                 "tenant_id": tenant_id,
-                "id_pedido": id_pedido
+                "id_pedido": id_pedido,
+                "paso_confirmado": paso
             })
         )
         print("DEBUG send_task_success resp:", resp_sf)
+
     except Exception as e:
-        # Aquí verás si es falta de permisos, token inválido, etc.
-        print("ERROR send_task_success:", repr(e))
+        print("ERROR send_task_success o update:", repr(e))
         return {
             "statusCode": 500,
             "body": json.dumps({
-                "mensaje": "Error al enviar confirmación a Step Functions",
+                "mensaje": "Error al actualizar datos o enviar confirmación a Step Functions",
                 "detalle": str(e)
             })
         }
@@ -513,7 +560,6 @@ def confirmar_paso(event, context):
         )
     except Exception as e:
         print("ERROR update_item REMOVE token:", repr(e))
-        # No es crítico, pero lo devolvemos para que lo veas
         return {
             "statusCode": 200,
             "body": json.dumps({
@@ -528,11 +574,12 @@ def confirmar_paso(event, context):
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "mensaje": f"Confirmación '{paso}' enviada a Step Functions",
-            "tenant_id": tenant_id,
-            "id_pedido": id_pedido
+                "mensaje": f"Confirmación '{paso}' enviada a Step Functions",
+                "tenant_id": tenant_id,
+                "id_pedido": id_pedido
         })
     }
+
 
 
 
