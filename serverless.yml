@@ -72,6 +72,20 @@ functions:
           path: /workflow/confirmar
           method: post
 
+  obtenerPedido:
+    handler: estado_pedidos.obtener_pedido
+    events:
+      - httpApi:
+          path: /pedidos/{id_pedido}
+          method: get
+
+  listarPedidos:
+    handler: estado_pedidos.listar_pedidos
+    events:
+      - httpApi:
+          path: /pedidos
+          method: get
+
 resources:
   Resources:
     PedidosTable:
