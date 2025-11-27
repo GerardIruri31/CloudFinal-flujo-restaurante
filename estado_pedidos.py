@@ -27,7 +27,7 @@ def parse_event(event):
     Normaliza el event para:
     - SQS: event["Records"][0]["body"] con JSON
     - Step Functions con waitForTaskToken: { "taskToken": "...", "input": {...} }
-    - HTTP API (Postman): body JSON en event["body"]
+    - HTTP API (GET y POST)
     - Step Functions normal: input directo
     """
     # --- Evento desde SQS ---
@@ -41,27 +41,43 @@ def parse_event(event):
                 body = {"raw_body": body_str}
             return body
 
-    # Caso Step Functions con waitForTaskToken
+    # --- STEP FUNCTIONS waitForTaskToken ---
     if "taskToken" in event and "input" in event and isinstance(event["input"], dict):
         base = event["input"].copy()
         base["taskToken"] = event["taskToken"]
         return base
 
-    # Caso típico HTTP API / Postman
-    if "body" in event and isinstance(event["body"], str):
-        try:
-            body = json.loads(event["body"])
-        except Exception:
-            body = {}
+    # ------------------------------------------------------------------
+    # 🟦 NUEVO: NORMALIZAR HTTP API (GET o POST)
+    # ------------------------------------------------------------------
+    if event.get("version") == "2.0":  # HTTP API siempre tiene version 2.0
+        result = {}
 
-        path_params = event.get("pathParameters") or {}
-        if isinstance(path_params, dict):
-            for k, v in path_params.items():
-                body.setdefault(k, v)
+        # Query params
+        if event.get("queryStringParameters"):
+            for k, v in event["queryStringParameters"].items():
+                result[k] = v
 
-        return body
+        # Path params
+        if event.get("pathParameters"):
+            for k, v in event["pathParameters"].items():
+                result[k] = v
 
-    # Caso Step Functions u otro que mande un dict simple
+        # Body si existe (POST)
+        body = event.get("body")
+        if body:
+            try:
+                body_data = json.loads(body)
+                if isinstance(body_data, dict):
+                    for k, v in body_data.items():
+                        result[k] = v
+            except:
+                pass
+
+        return result
+    # ------------------------------------------------------------------
+
+    # --- Caso Step Functions u otro que mande un dict simple ---
     return event
 
 
@@ -705,7 +721,6 @@ def confirmar_paso(event, context):
                 "id_pedido": id_pedido
         })
     }
-
 
 
 
